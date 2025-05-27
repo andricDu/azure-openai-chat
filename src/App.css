@@ -36,3 +36,36 @@
     transform: rotate(360deg);
   }
 }
+
+.streaming-cursor {
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+.message-container {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 16px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background-color: #fafafa;
+}
+
+.user-message {
+  background-color: #e6f7ff;
+  border-color: #91d5ff;
+}
+
+.assistant-message {
+  background-color: #f6ffed;
+  border-color: #b7eb8f;
+}
+
+.streaming-indicator {
+  color: #1890ff;
+  font-weight: bold;
+}
