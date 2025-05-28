@@ -1,22 +1,29 @@
-import { useState, useRef, useEffect, useContext } from "react";
-import { Input, Button, Typography, Space, Card, Switch, message as notification } from "antd";
-import { SendOutlined, ClearOutlined } from "@ant-design/icons";
+import React, { useRef, useEffect, useContext, useReducer, useCallback } from "react";
+import { Typography, Card, message as notification } from "antd";
 import ReactMarkdown from "react-markdown";
 import { AuthContext } from "./AuthProvider";
-
-const { TextArea } = Input;
-const { Text, Paragraph } = Typography;
+import { debounce } from "lodash";
+import { chatReducer, initialState } from "./reducers/chatReducer";
+import { useChatApi } from "./hooks/useChatApi";
+import ChatHeader from "./components/ChatHeader";
+import MessageInput from "./components/MessageInput";
+import ChatMessage from './components/ChatMessage';
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
 
 const Chat = () => {
-    const [message, setMessage] = useState("");
-    const [history, setHistory] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const [streaming, setStreaming] = useState(true);
-    const [currentStreamingMessage, setCurrentStreamingMessage] = useState("");
+    const [state, dispatch] = useReducer(chatReducer, initialState);
     const { token, authenticated } = useContext(AuthContext);
     const chatEndRef = useRef(null);
+    const { fetchChatHistory } = useChatApi();
+
+    const { 
+        message, 
+        history, 
+        loading, 
+        streaming, 
+        currentStreamingMessage 
+    } = state;
 
     const scrollToBottom = () => {
         chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -28,13 +35,74 @@ const Chat = () => {
 
     useEffect(() => {
         if (authenticated) {
-            fetchChatHistory();
+            loadChatHistory();
         }
-    }, [authenticated]); // Only run when auth state changes
+    }, [authenticated]);
+
+    const loadChatHistory = async () => {
+        try {
+            const historyData = await fetchChatHistory();
+            dispatch({ type: 'SET_HISTORY', payload: historyData });
+        } catch (error) {
+            handleApiError(error, "Failed to load chat history");
+        }
+    };
+
+    const handleApiError = (error, errorMessage) => {
+        console.error(errorMessage, error);
+        notification.error({
+            message: "Error",
+            description: errorMessage,
+            duration: 4,
+        });
+    };
+
+    const setMessage = useCallback(
+        debounce((value) => {
+            dispatch({ type: 'SET_MESSAGE', payload: value });
+        }, 100),
+        []
+    );
+
+    const setStreaming = (value) => {
+        dispatch({ type: 'SET_STREAMING', payload: value });
+    };
+
+    const clearChat = async () => {
+        try {
+            // First, clear the UI
+            dispatch({ type: 'CLEAR_CHAT' });
+            
+            // Then make API call to clear Redis cache
+            if (authenticated && token) {
+                const response = await fetch(`${API_BASE_URL}/chat/clear`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                notification.success({
+                    message: "Chat cleared",
+                    description: "Chat history has been cleared from the server.",
+                    duration: 3,
+                });
+            }
+        } catch (error) {
+            handleApiError(error, "Failed to clear chat history from server");
+            // Note: We don't revert the UI clear, as it's better to have UI/server mismatch
+            // than to confuse the user by bringing back messages they wanted to clear
+        }
+    };
 
     const sendMessage = async () => {
         if (!authenticated) {
-            alert("You must be logged in!");
+            notification.warning("You must be logged in!");
             return;
         }
 
@@ -44,17 +112,20 @@ const Chat = () => {
             role: "user",
             content: message,
             timestamp: new Date().toISOString(),
+            id: Date.now(),
         };
 
-        setHistory((prev) => [...prev, userMessage]);
-        const currentMessage = message; // Store current message before clearing
-        setMessage("");
-        setLoading(true);
+        dispatch({ type: 'ADD_USER_MESSAGE', payload: userMessage });
+        dispatch({ type: 'SET_LOADING', payload: true });
 
-        if (streaming) {
-            await sendStreamingMessage(currentMessage);
-        } else {
-            await sendRegularMessage(currentMessage);
+        try {
+            if (streaming) {
+                await sendStreamingMessage(message);
+            } else {
+                await sendRegularMessage(message);
+            }
+        } catch (error) {
+            handleApiError(error, "Failed to send message");
         }
     };
 
@@ -80,36 +151,31 @@ const Chat = () => {
             let buffer = "";
 
             const streamingMessageId = Date.now();
-            setHistory((prev) => [
-                ...prev,
-                {
+            dispatch({ 
+                type: 'ADD_ASSISTANT_MESSAGE', 
+                payload: {
                     role: "assistant",
                     content: "",
                     timestamp: new Date().toISOString(),
                     id: streamingMessageId,
                     streaming: true,
-                },
-            ]);
+                }
+            });
 
             let streamedContent = "";
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) {
-                    console.log('Stream ended');
-                    setHistory((prev) =>
-                        prev.map((msg) =>
-                            msg.id === streamingMessageId
-                                ? { ...msg, streaming: false }
-                                : msg
-                        )
-                    );
+                    dispatch({ 
+                        type: 'SET_STREAMING_STATUS', 
+                        payload: { id: streamingMessageId, streaming: false }
+                    });
                     break;
                 }
 
                 const chunk = decoder.decode(value, { stream: true });
                 buffer += chunk;
-                console.log('Raw chunk received:', chunk);
 
                 // Split on "data: " to handle concatenated messages
                 const parts = buffer.split('data: ');
@@ -121,37 +187,27 @@ const Chat = () => {
                     if (!jsonStr) continue;
                     
                     try {
-                        console.log('Parsing JSON:', jsonStr);
                         const data = JSON.parse(jsonStr);
-                        console.log('Parsed data:', data);
 
                         if (data.type === "content" && data.content) {
                             streamedContent += data.content;
-                            console.log('Updated content:', streamedContent);
-
-                            setHistory((prev) =>
-                                prev.map((msg) =>
-                                    msg.id === streamingMessageId
-                                        ? { ...msg, content: streamedContent }
-                                        : msg
-                                )
-                            );
+                            
+                            dispatch({ 
+                                type: 'UPDATE_STREAMING_MESSAGE', 
+                                payload: { id: streamingMessageId, content: streamedContent }
+                            });
                         } else if (data.type === "done") {
-                            console.log('Stream completed via done signal');
-                            setHistory((prev) =>
-                                prev.map((msg) =>
-                                    msg.id === streamingMessageId
-                                        ? { ...msg, streaming: false }
-                                        : msg
-                                )
-                            );
+                            dispatch({ 
+                                type: 'SET_STREAMING_STATUS', 
+                                payload: { id: streamingMessageId, streaming: false }
+                            });
                             return;
                         } else if (data.type === "error") {
-                            console.error('Stream error:', data.error);
                             notification.error(`Error: ${data.error}`);
-                            setHistory((prev) =>
-                                prev.filter((msg) => msg.id !== streamingMessageId)
-                            );
+                            dispatch({ 
+                                type: 'SET_HISTORY', 
+                                payload: history.filter(msg => msg.id !== streamingMessageId)
+                            });
                             return;
                         }
                     } catch (e) {
@@ -160,10 +216,9 @@ const Chat = () => {
                 }
             }
         } catch (error) {
-            console.error("Streaming error:", error);
-            notification.error("Failed to send message with streaming");
+            handleApiError(error, "Failed to send message with streaming");
         } finally {
-            setLoading(false);
+            dispatch({ type: 'SET_LOADING', payload: false });
         }
     };
 
@@ -185,26 +240,21 @@ const Chat = () => {
             }
 
             const data = await response.json();
-            console.log('Response data:', data);
 
             const assistantMessage = {
                 role: "assistant",
                 content: data.response || data.content,
                 timestamp: new Date().toISOString(),
+                id: Date.now(),
+                streaming: false
             };
 
-            setHistory((prev) => [...prev, assistantMessage]);
+            dispatch({ type: 'ADD_ASSISTANT_MESSAGE', payload: assistantMessage });
         } catch (error) {
-            console.error("Error:", error);
-            notification.error("Failed to send message");
+            handleApiError(error, "Failed to send message");
         } finally {
-            setLoading(false);
+            dispatch({ type: 'SET_LOADING', payload: false });
         }
-    };
-
-    const clearChat = () => {
-        setHistory([]);
-        setCurrentStreamingMessage("");
     };
 
     const handleKeyPress = (e) => {
@@ -214,35 +264,30 @@ const Chat = () => {
         }
     };
 
-    const fetchChatHistory = async () => {
+    const handleRetry = (messageContent) => {
+        // Set the message in the input field
+        dispatch({ type: 'SET_MESSAGE', payload: messageContent });
+        
+        // Optional: Automatically send the message
+        // If you want the user to review before sending, remove these lines
+        const userMessage = {
+            role: "user",
+            content: messageContent,
+            timestamp: new Date().toISOString(),
+            id: Date.now(),
+        };
+
+        dispatch({ type: 'ADD_USER_MESSAGE', payload: userMessage });
+        dispatch({ type: 'SET_LOADING', payload: true });
+
         try {
-            const response = await fetch(`${API_BASE_URL}/chat`, {
-                method: "GET",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                },
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+            if (streaming) {
+                sendStreamingMessage(messageContent);
+            } else {
+                sendRegularMessage(messageContent);
             }
-
-            const data = await response.json();
-            
-            // Format the history data to match existing state structure
-            const formattedHistory = data.map(msg => ({
-                role: msg.role,
-                content: msg.content,
-                timestamp: msg.timestamp || new Date().toISOString(),
-                id: Date.now() + Math.random(),
-                streaming: false
-            }));
-            
-            setHistory(formattedHistory);
         } catch (error) {
-            console.error("Error fetching chat history:", error);
-            notification.error("Failed to load chat history");
+            handleApiError(error, "Failed to send message");
         }
     };
 
@@ -257,26 +302,12 @@ const Chat = () => {
                 padding: "20px",
             }}
         >
-            <Card style={{ marginBottom: "20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
-                    <Text strong>AI Chat Assistant</Text>
-                    <Space>
-                        <Text>Streaming:</Text>
-                        <Switch
-                            checked={streaming}
-                            onChange={setStreaming}
-                            disabled={loading}
-                        />
-                        <Button
-                            icon={<ClearOutlined />}
-                            onClick={clearChat}
-                            disabled={loading}
-                        >
-                            Clear
-                        </Button>
-                    </Space>
-                </div>
-            </Card>
+            <ChatHeader 
+                streaming={streaming} 
+                setStreaming={setStreaming} 
+                clearChat={clearChat} 
+                loading={loading} 
+            />
 
             <div
                 style={{
@@ -288,132 +319,27 @@ const Chat = () => {
                     borderRadius: "6px",
                     backgroundColor: "#fafafa",
                 }}
+                aria-live="polite"
+                aria-label="Chat messages"
             >
                 {history.map((msg, index) => (
-                    <div key={index} style={{ marginBottom: "16px" }}>
-                        <Card
-                            size="small"
-                            style={{
-                                backgroundColor: msg.role === "user" ? "#e6f7ff" : "#f6ffed",
-                                border: `1px solid ${msg.role === "user" ? "#91d5ff" : "#b7eb8f"}`,
-                            }}
-                        >
-                            <Space direction="vertical" style={{ width: "100%" }}>
-                                <Text strong>
-                                    {msg.role === "user" ? "👤 You" : "🤖 Assistant"}
-                                    {msg.streaming && " (typing...)"}
-                                </Text>
-                                
-                                {msg.role === "assistant" ? (
-                                    <div style={{ margin: 0 }}>
-                                        <ReactMarkdown
-                                            components={{
-                                                h1: ({ node, ...props }) => (
-                                                    <Text {...props} style={{ fontSize: '20px', fontWeight: 'bold', display: 'block', marginBottom: '8px' }} />
-                                                ),
-                                                h2: ({ node, ...props }) => (
-                                                    <Text {...props} style={{ fontSize: '18px', fontWeight: 'bold', display: 'block', marginBottom: '6px' }} />
-                                                ),
-                                                h3: ({ node, ...props }) => (
-                                                    <Text {...props} style={{ fontSize: '16px', fontWeight: 'bold', display: 'block', marginBottom: '4px' }} />
-                                                ),
-                                                p: ({ node, ...props }) => (
-                                                    <Paragraph {...props} style={{ margin: '8px 0' }} />
-                                                ),
-                                                ul: ({ node, ...props }) => (
-                                                    <ul {...props} style={{ marginLeft: '16px', marginBottom: '8px' }} />
-                                                ),
-                                                ol: ({ node, ...props }) => (
-                                                    <ol {...props} style={{ marginLeft: '16px', marginBottom: '8px' }} />
-                                                ),
-                                                li: ({ node, ...props }) => (
-                                                    <li {...props} style={{ marginBottom: '4px' }} />
-                                                ),
-                                                code: ({ node, inline, ...props }) => (
-                                                    inline ? (
-                                                        <Text code {...props} style={{ backgroundColor: '#f5f5f5', padding: '2px 4px', borderRadius: '3px' }} />
-                                                    ) : (
-                                                        <pre style={{ 
-                                                            backgroundColor: '#f5f5f5', 
-                                                            padding: '12px', 
-                                                            borderRadius: '6px', 
-                                                            overflow: 'auto',
-                                                            fontSize: '13px',
-                                                            border: '1px solid #d9d9d9'
-                                                        }}>
-                                                            <code {...props} />
-                                                        </pre>
-                                                    )
-                                                ),
-                                                blockquote: ({ node, ...props }) => (
-                                                    <div {...props} style={{ 
-                                                        borderLeft: '4px solid #1890ff', 
-                                                        paddingLeft: '12px', 
-                                                        margin: '8px 0',
-                                                        fontStyle: 'italic',
-                                                        backgroundColor: '#f0f8ff'
-                                                    }} />
-                                                ),
-                                                strong: ({ node, ...props }) => (
-                                                    <Text strong {...props} />
-                                                ),
-                                                em: ({ node, ...props }) => (
-                                                    <Text italic {...props} />
-                                                ),
-                                            }}
-                                        >
-                                            {msg.content}
-                                        </ReactMarkdown>
-                                        {msg.streaming && (
-                                            <Text style={{ 
-                                                color: '#1890ff', 
-                                                fontWeight: 'bold',
-                                                fontSize: '16px',
-                                                marginLeft: '4px',
-                                                animation: 'blink 1s infinite'
-                                            }}>
-                                                ▊
-                                            </Text>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <Paragraph style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-                                        {msg.content}
-                                    </Paragraph>
-                                )}
-                                
-                                <Text type="secondary" style={{ fontSize: "12px" }}>
-                                    {new Date(msg.timestamp).toLocaleTimeString()}
-                                </Text>
-                            </Space>
-                        </Card>
-                    </div>
+                    <ChatMessage 
+                        key={msg.id || index} 
+                        message={msg} 
+                        onRetry={handleRetry}
+                    />
                 ))}
                 <div ref={chatEndRef} />
             </div>
 
-            <Card>
-                <div style={{ display: "flex", gap: "8px" }}>
-                    <TextArea
-                        value={message}
-                        onChange={(e) => setMessage(e.target.value)}
-                        onKeyPress={handleKeyPress}
-                        placeholder={`Type your message... (${streaming ? "Streaming" : "Regular"} mode)`}
-                        autoSize={{ minRows: 1, maxRows: 4 }}
-                        disabled={loading}
-                        style={{ flex: 1 }}
-                    />
-                    <Button
-                        type="primary"
-                        icon={<SendOutlined />}
-                        onClick={sendMessage}
-                        loading={loading}
-                        disabled={!message.trim()}
-                    >
-                        Send
-                    </Button>
-                </div>
-            </Card>
+            <MessageInput 
+                message={message}
+                setMessage={(value) => dispatch({ type: 'SET_MESSAGE', payload: value })}
+                sendMessage={sendMessage}
+                handleKeyPress={handleKeyPress}
+                loading={loading}
+                streaming={streaming}
+            />
         </div>
     );
 };

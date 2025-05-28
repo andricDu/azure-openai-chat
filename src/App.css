@@ -38,6 +38,10 @@
 }
 
 .streaming-cursor {
+  color: #1890ff;
+  font-weight: bold;
+  font-size: 16px;
+  margin-left: 4px;
   animation: blink 1s infinite;
 }
 
@@ -53,19 +57,68 @@
   border: 1px solid #d9d9d9;
   border-radius: 6px;
   background-color: #fafafa;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
 }
 
 .user-message {
   background-color: #e6f7ff;
   border-color: #91d5ff;
+  background-color: #f7f7f8 !important;
+  border-color: transparent !important;
 }
 
 .assistant-message {
   background-color: #f6ffed;
   border-color: #b7eb8f;
+  background-color: #ffffff !important;
+  border-color: transparent !important;
+}
+
+.assistant-message .message-content,
+.assistant-message .markdown-content {
+  background-color: transparent !important;
+}
+
+.message-content {
+  margin: 0;
+  padding: 0;
+  background-color: transparent;
 }
 
 .streaming-indicator {
   color: #1890ff;
   font-weight: bold;
+}
+
+/* Add subtle alternating row styling */
+.message-row:nth-child(odd) {
+  background-color: #f7f7f8;
+}
+
+.message-row:nth-child(even) {
+  background-color: #ffffff;
+}
+
+/* Add gentle padding between messages */
+.message-row {
+  padding: 16px 0;
+}
+
+/* Make code blocks more visible on white backgrounds */
+.assistant-message .markdown-content pre {
+  background-color: #f7f7f8;
+  border: 1px solid #e5e5e5;
+}
+
+/* Add to your stylesheet */
+.retry-button {
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.retry-button:hover {
+    opacity: 1;
+    color: #1890ff;
 }
