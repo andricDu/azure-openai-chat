@@ -1,110 +1,243 @@
-import React, { useState, useContext, useEffect, useRef } from "react";
-import axios from "axios";
-import { Layout, Input, Button, Typography, Space } from "antd";
-import ReactMarkdown from "react-markdown";
+import React, { useRef, useEffect, useState, useContext } from "react";
 import { AuthContext } from "./AuthProvider";
-
-const { Header, Content, Footer } = Layout;
-const { TextArea } = Input;
-const { Title } = Typography;
+import { useChatApi } from "./hooks/useChatApi";
+import ChatHeader from "./components/ChatHeader";
+import MessageInput from "./components/MessageInput";
+import ChatMessage from './components/ChatMessage';
 
 const Chat = () => {
     const [message, setMessage] = useState("");
     const [history, setHistory] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const { token, authenticated } = useContext(AuthContext);
+    const [streaming, setStreaming] = useState(true);
+    const { authenticated } = useContext(AuthContext);
+    
     const chatEndRef = useRef(null);
+    const { 
+        fetchChatHistory, 
+        clearChatHistory, 
+        sendMessage, 
+        streamMessage, 
+        isLoading 
+    } = useChatApi();
 
+    
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [history]);
 
-    const sendMessage = async () => {
-        if (!authenticated) {
-            alert("You must be logged in!");
-            return;
-        }
+    
+    useEffect(() => {
+        loadChatHistory();
+    }, []);
 
-        try {
-            setLoading(true);
-            const res = await axios.post(
-                "http://0.0.0.0:5071/v1/chat",
-                { message },
-                {
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                        "Content-Type": "application/json",
-                        Accept: "application/json",
-                    },
+    
+    useEffect(() => {
+        if (authenticated) {
+            loadChatHistory();
+        }
+    }, [authenticated]); 
+
+    const loadChatHistory = async () => {
+        const historyData = await fetchChatHistory();
+        console.log("History data received in component:", historyData);
+        
+        if (historyData && Array.isArray(historyData)) {
+            setHistory(historyData);
+        } else {
+            console.error("Invalid history data format:", historyData);
+        }
+    };
+
+    const clearChat = async () => {
+        setHistory([]);
+        await clearChatHistory();
+    };
+
+    const handleSendMessage = async () => {
+        if (!message.trim()) return;
+
+        
+        const userMessage = {
+            role: "user",
+            content: message,
+            timestamp: new Date().toISOString(),
+            id: Date.now(),
+        };
+        setHistory(prev => [...prev, userMessage]);
+        
+        
+        const currentMessage = message;
+        setMessage("");
+
+        if (streaming) {
+            
+            streamMessage(
+                currentMessage,
+                
+                (initialMessage) => {
+                    setHistory(prev => [...prev, initialMessage]);
+                },
+                
+                (msgId, chunk, fullContent) => {
+                    setHistory(prev => 
+                        prev.map(msg => 
+                            msg.id === msgId 
+                                ? { ...msg, content: fullContent } 
+                                : msg
+                        )
+                    );
+                },
+                
+                (msgId, finalContent) => {
+                    setHistory(prev => 
+                        prev.map(msg => 
+                            msg.id === msgId 
+                                ? { ...msg, streaming: false } 
+                                : msg
+                        )
+                    );
+                },
+                
+                (msgId, errorMessage) => {
+                    if (msgId) {
+                        
+                        setHistory(prev => prev.filter(msg => msg.id !== msgId));
+                    }
+                    
+                    
+                    const errorContent = typeof errorMessage === 'object'
+                        ? JSON.stringify(errorMessage, null, 2)
+                        : String(errorMessage);
+                    
+                    const errorMsg = {
+                        role: "system",
+                        content: `Error: ${errorContent}`,
+                        timestamp: new Date().toISOString(),
+                        id: Date.now()
+                    };
+                    setHistory(prev => [...prev, errorMsg]);
                 }
             );
+        } else {
+            
+            const response = await sendMessage(currentMessage);
+            if (response) {
+                setHistory(prev => [...prev, response]);
+            }
+        }
+    };
 
-            setHistory([...history, { role: "user", content: message }, { role: "bot", content: res.data.response }]);
-            setMessage("");
-        } catch (error) {
-            console.error("Error sending message:", error);
-        } finally {
-            setLoading(false);
+    const handleKeyPress = (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleSendMessage();
+        }
+    };
+
+    const handleRetry = (messageContent) => {
+        setMessage(messageContent);
+        
+        
+        const userMessage = {
+            role: "user",
+            content: messageContent,
+            timestamp: new Date().toISOString(),
+            id: Date.now(),
+        };
+
+        setHistory(prev => [...prev, userMessage]);
+        
+        if (streaming) {
+            streamMessage(
+                messageContent,
+                (initialMessage) => setHistory(prev => [...prev, initialMessage]),
+                (msgId, chunk, fullContent) => {
+                    setHistory(prev => 
+                        prev.map(msg => 
+                            msg.id === msgId ? { ...msg, content: fullContent } : msg
+                        )
+                    );
+                },
+                (msgId) => {
+                    setHistory(prev => 
+                        prev.map(msg => 
+                            msg.id === msgId ? { ...msg, streaming: false } : msg
+                        )
+                    );
+                },
+                (msgId, errorMessage) => {
+                    if (msgId) {
+                        setHistory(prev => prev.filter(msg => msg.id !== msgId));
+                    }
+                    
+                    const errorMsg = {
+                        role: "system",
+                        content: `Error: ${errorMessage}`,
+                        timestamp: new Date().toISOString(),
+                        id: Date.now()
+                    };
+                    setHistory(prev => [...prev, errorMsg]);
+                }
+            );
+        } else {
+            sendMessage(messageContent).then(response => {
+                if (response) {
+                    setHistory(prev => [...prev, response]);
+                }
+            });
         }
     };
 
     return (
-        <Layout style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
-            <Header style={{ background: "#fff", padding: 0 }}>
-                <div style={{ textAlign: "center" }}>
-                    <Title level={2}>Pilot Help Chatbot</Title>
-                </div>
-            </Header>
-            <Content style={{ flexGrow: 1, padding: "0 50px", display: "flex", flexDirection: "column" }}>
-                <div
-                    style={{
-                        flexGrow: 1,
-                        display: "flex",
-                        flexDirection: "column-reverse",
-                        overflowY: "auto",
-                        border: "1px solid #ccc",
-                        padding: "10px",
-                        borderRadius: "8px",
-                        background: "#f9f9f9",
-                    }}
-                >
-                    {history
-                        .slice()
-                        .reverse()
-                        .map((msg, index) => (
-                            <div
-                                key={index}
-                                style={{
-                                    display: "flex",
-                                    justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
-                                    marginBottom: "8px",
-                                }}
-                            >
-                                <div
-                                    style={{
-                                        maxWidth: "60%",
-                                        padding: "10px 15px",
-                                        borderRadius: "15px",
-                                        backgroundColor: msg.role === "user" ? "#007bff" : "#EAEAEA",
-                                        color: msg.role === "user" ? "#fff" : "#000",
-                                        wordWrap: "break-word",
-                                    }}
-                                >
-                                    <ReactMarkdown>{msg.content}</ReactMarkdown>
-                                </div>
-                            </div>
-                        ))}
-                    <div ref={chatEndRef} />
-                </div>
-                <Space direction="vertical" style={{ width: "100%", marginTop: "10px" }}>
-                    <TextArea rows={3} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Type your message here" />
-                    <Button type="primary" onClick={sendMessage} loading={loading} block>
-                        Send
-                    </Button>
-                </Space>
-            </Content>
-            <Footer style={{ textAlign: "center" }}></Footer>
-        </Layout>
+        <div
+            style={{
+                height: "100vh",
+                display: "flex",
+                flexDirection: "column",
+                maxWidth: "800px",
+                margin: "0 auto",
+                padding: "20px",
+            }}
+        >
+            <ChatHeader 
+                streaming={streaming} 
+                setStreaming={setStreaming} 
+                clearChat={clearChat} 
+                loading={isLoading} 
+            />
+
+            <div
+                style={{
+                    flex: 1,
+                    overflowY: "auto",
+                    marginBottom: "20px",
+                    padding: "20px",
+                    border: "1px solid #d9d9d9",
+                    borderRadius: "6px",
+                    backgroundColor: "#fafafa",
+                }}
+                aria-live="polite"
+                aria-label="Chat messages"
+            >
+                {history.map((msg) => (
+                    <ChatMessage 
+                        key={msg.id} 
+                        message={msg} 
+                        onRetry={handleRetry}
+                    />
+                ))}
+                <div ref={chatEndRef} />
+            </div>
+
+            <MessageInput 
+                message={message}
+                setMessage={setMessage}
+                sendMessage={handleSendMessage}
+                handleKeyPress={handleKeyPress}
+                loading={isLoading}
+                streaming={streaming}
+            />
+        </div>
     );
 };
 

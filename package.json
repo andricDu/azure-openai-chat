@@ -6,11 +6,16 @@
     "antd": "^5.23.4",
     "axios": "^1.7.9",
     "cra-template": "1.2.0",
+    "highlight.js": "^11.11.1",
     "keycloak-js": "^26.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^9.0.3",
-    "react-scripts": "5.0.1"
+    "react-scripts": "^5.0.1",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "webpack": "^5.99.9",
+    "webpack-dev-server": "^5.2.1"
   },
   "scripts": {
     "start": "react-scripts start",
