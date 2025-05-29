@@ -1,275 +1,143 @@
-import React, { useRef, useEffect, useContext, useReducer, useCallback } from "react";
-import { Typography, Card, message as notification } from "antd";
-import ReactMarkdown from "react-markdown";
+import React, { useRef, useEffect, useState, useContext } from "react";
 import { AuthContext } from "./AuthProvider";
-import { debounce } from "lodash";
-import { chatReducer, initialState } from "./reducers/chatReducer";
 import { useChatApi } from "./hooks/useChatApi";
 import ChatHeader from "./components/ChatHeader";
 import MessageInput from "./components/MessageInput";
 import ChatMessage from './components/ChatMessage';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
-
 const Chat = () => {
-    const [state, dispatch] = useReducer(chatReducer, initialState);
-    const { token, authenticated } = useContext(AuthContext);
+    const [message, setMessage] = useState("");
+    const [history, setHistory] = useState([]);
+    const [streaming, setStreaming] = useState(true);
+    const { authenticated } = useContext(AuthContext);
+    
     const chatEndRef = useRef(null);
-    const { fetchChatHistory } = useChatApi();
-
     const { 
-        message, 
-        history, 
-        loading, 
-        streaming, 
-        currentStreamingMessage 
-    } = state;
+        fetchChatHistory, 
+        clearChatHistory, 
+        sendMessage, 
+        streamMessage, 
+        isLoading 
+    } = useChatApi();
 
-    const scrollToBottom = () => {
-        chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
-
+    
     useEffect(() => {
-        scrollToBottom();
-    }, [history, currentStreamingMessage]);
+        chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, [history]);
 
+    
+    useEffect(() => {
+        loadChatHistory();
+    }, []);
+
+    
     useEffect(() => {
         if (authenticated) {
             loadChatHistory();
         }
-    }, [authenticated]);
+    }, [authenticated]); 
 
     const loadChatHistory = async () => {
-        try {
-            const historyData = await fetchChatHistory();
-            dispatch({ type: 'SET_HISTORY', payload: historyData });
-        } catch (error) {
-            handleApiError(error, "Failed to load chat history");
+        const historyData = await fetchChatHistory();
+        console.log("History data received in component:", historyData);
+        
+        if (historyData && Array.isArray(historyData)) {
+            setHistory(historyData);
+        } else {
+            console.error("Invalid history data format:", historyData);
         }
-    };
-
-    const handleApiError = (error, errorMessage) => {
-        console.error(errorMessage, error);
-        notification.error({
-            message: "Error",
-            description: errorMessage,
-            duration: 4,
-        });
-    };
-
-    const setMessage = useCallback(
-        debounce((value) => {
-            dispatch({ type: 'SET_MESSAGE', payload: value });
-        }, 100),
-        []
-    );
-
-    const setStreaming = (value) => {
-        dispatch({ type: 'SET_STREAMING', payload: value });
     };
 
     const clearChat = async () => {
-        try {
-            // First, clear the UI
-            dispatch({ type: 'CLEAR_CHAT' });
-            
-            // Then make API call to clear Redis cache
-            if (authenticated && token) {
-                const response = await fetch(`${API_BASE_URL}/chat/clear`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${token}`,
-                    },
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                
-                notification.success({
-                    message: "Chat cleared",
-                    description: "Chat history has been cleared from the server.",
-                    duration: 3,
-                });
-            }
-        } catch (error) {
-            handleApiError(error, "Failed to clear chat history from server");
-            // Note: We don't revert the UI clear, as it's better to have UI/server mismatch
-            // than to confuse the user by bringing back messages they wanted to clear
-        }
+        setHistory([]);
+        await clearChatHistory();
     };
 
-    const sendMessage = async () => {
-        if (!authenticated) {
-            notification.warning("You must be logged in!");
-            return;
-        }
-
+    const handleSendMessage = async () => {
         if (!message.trim()) return;
 
+        
         const userMessage = {
             role: "user",
             content: message,
             timestamp: new Date().toISOString(),
             id: Date.now(),
         };
+        setHistory(prev => [...prev, userMessage]);
+        
+        
+        const currentMessage = message;
+        setMessage("");
 
-        dispatch({ type: 'ADD_USER_MESSAGE', payload: userMessage });
-        dispatch({ type: 'SET_LOADING', payload: true });
-
-        try {
-            if (streaming) {
-                await sendStreamingMessage(message);
-            } else {
-                await sendRegularMessage(message);
-            }
-        } catch (error) {
-            handleApiError(error, "Failed to send message");
-        }
-    };
-
-    const sendStreamingMessage = async (prompt) => {
-        try {
-            const response = await fetch(`${API_BASE_URL}/chat/stream`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
+        if (streaming) {
+            
+            streamMessage(
+                currentMessage,
+                
+                (initialMessage) => {
+                    setHistory(prev => [...prev, initialMessage]);
                 },
-                body: JSON.stringify({
-                    message: prompt
-                }),
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
-
-            const streamingMessageId = Date.now();
-            dispatch({ 
-                type: 'ADD_ASSISTANT_MESSAGE', 
-                payload: {
-                    role: "assistant",
-                    content: "",
-                    timestamp: new Date().toISOString(),
-                    id: streamingMessageId,
-                    streaming: true,
-                }
-            });
-
-            let streamedContent = "";
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) {
-                    dispatch({ 
-                        type: 'SET_STREAMING_STATUS', 
-                        payload: { id: streamingMessageId, streaming: false }
-                    });
-                    break;
-                }
-
-                const chunk = decoder.decode(value, { stream: true });
-                buffer += chunk;
-
-                // Split on "data: " to handle concatenated messages
-                const parts = buffer.split('data: ');
-                buffer = parts.pop() || ""; // Keep incomplete part in buffer
-
-                for (let i = 1; i < parts.length; i++) { // Skip first empty part
-                    const jsonStr = parts[i].trim();
-                    
-                    if (!jsonStr) continue;
-                    
-                    try {
-                        const data = JSON.parse(jsonStr);
-
-                        if (data.type === "content" && data.content) {
-                            streamedContent += data.content;
-                            
-                            dispatch({ 
-                                type: 'UPDATE_STREAMING_MESSAGE', 
-                                payload: { id: streamingMessageId, content: streamedContent }
-                            });
-                        } else if (data.type === "done") {
-                            dispatch({ 
-                                type: 'SET_STREAMING_STATUS', 
-                                payload: { id: streamingMessageId, streaming: false }
-                            });
-                            return;
-                        } else if (data.type === "error") {
-                            notification.error(`Error: ${data.error}`);
-                            dispatch({ 
-                                type: 'SET_HISTORY', 
-                                payload: history.filter(msg => msg.id !== streamingMessageId)
-                            });
-                            return;
-                        }
-                    } catch (e) {
-                        console.warn("Failed to parse SSE data:", jsonStr, e);
+                
+                (msgId, chunk, fullContent) => {
+                    setHistory(prev => 
+                        prev.map(msg => 
+                            msg.id === msgId 
+                                ? { ...msg, content: fullContent } 
+                                : msg
+                        )
+                    );
+                },
+                
+                (msgId, finalContent) => {
+                    setHistory(prev => 
+                        prev.map(msg => 
+                            msg.id === msgId 
+                                ? { ...msg, streaming: false } 
+                                : msg
+                        )
+                    );
+                },
+                
+                (msgId, errorMessage) => {
+                    if (msgId) {
+                        
+                        setHistory(prev => prev.filter(msg => msg.id !== msgId));
                     }
+                    
+                    
+                    const errorContent = typeof errorMessage === 'object'
+                        ? JSON.stringify(errorMessage, null, 2)
+                        : String(errorMessage);
+                    
+                    const errorMsg = {
+                        role: "system",
+                        content: `Error: ${errorContent}`,
+                        timestamp: new Date().toISOString(),
+                        id: Date.now()
+                    };
+                    setHistory(prev => [...prev, errorMsg]);
                 }
+            );
+        } else {
+            
+            const response = await sendMessage(currentMessage);
+            if (response) {
+                setHistory(prev => [...prev, response]);
             }
-        } catch (error) {
-            handleApiError(error, "Failed to send message with streaming");
-        } finally {
-            dispatch({ type: 'SET_LOADING', payload: false });
-        }
-    };
-
-    const sendRegularMessage = async (prompt) => {
-        try {
-            const response = await fetch(`${API_BASE_URL}/chat`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                },
-                body: JSON.stringify({
-                    message: prompt,
-                }),
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const data = await response.json();
-
-            const assistantMessage = {
-                role: "assistant",
-                content: data.response || data.content,
-                timestamp: new Date().toISOString(),
-                id: Date.now(),
-                streaming: false
-            };
-
-            dispatch({ type: 'ADD_ASSISTANT_MESSAGE', payload: assistantMessage });
-        } catch (error) {
-            handleApiError(error, "Failed to send message");
-        } finally {
-            dispatch({ type: 'SET_LOADING', payload: false });
         }
     };
 
     const handleKeyPress = (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
-            sendMessage();
+            handleSendMessage();
         }
     };
 
     const handleRetry = (messageContent) => {
-        // Set the message in the input field
-        dispatch({ type: 'SET_MESSAGE', payload: messageContent });
+        setMessage(messageContent);
         
-        // Optional: Automatically send the message
-        // If you want the user to review before sending, remove these lines
+        
         const userMessage = {
             role: "user",
             content: messageContent,
@@ -277,17 +145,46 @@ const Chat = () => {
             id: Date.now(),
         };
 
-        dispatch({ type: 'ADD_USER_MESSAGE', payload: userMessage });
-        dispatch({ type: 'SET_LOADING', payload: true });
-
-        try {
-            if (streaming) {
-                sendStreamingMessage(messageContent);
-            } else {
-                sendRegularMessage(messageContent);
-            }
-        } catch (error) {
-            handleApiError(error, "Failed to send message");
+        setHistory(prev => [...prev, userMessage]);
+        
+        if (streaming) {
+            streamMessage(
+                messageContent,
+                (initialMessage) => setHistory(prev => [...prev, initialMessage]),
+                (msgId, chunk, fullContent) => {
+                    setHistory(prev => 
+                        prev.map(msg => 
+                            msg.id === msgId ? { ...msg, content: fullContent } : msg
+                        )
+                    );
+                },
+                (msgId) => {
+                    setHistory(prev => 
+                        prev.map(msg => 
+                            msg.id === msgId ? { ...msg, streaming: false } : msg
+                        )
+                    );
+                },
+                (msgId, errorMessage) => {
+                    if (msgId) {
+                        setHistory(prev => prev.filter(msg => msg.id !== msgId));
+                    }
+                    
+                    const errorMsg = {
+                        role: "system",
+                        content: `Error: ${errorMessage}`,
+                        timestamp: new Date().toISOString(),
+                        id: Date.now()
+                    };
+                    setHistory(prev => [...prev, errorMsg]);
+                }
+            );
+        } else {
+            sendMessage(messageContent).then(response => {
+                if (response) {
+                    setHistory(prev => [...prev, response]);
+                }
+            });
         }
     };
 
@@ -306,7 +203,7 @@ const Chat = () => {
                 streaming={streaming} 
                 setStreaming={setStreaming} 
                 clearChat={clearChat} 
-                loading={loading} 
+                loading={isLoading} 
             />
 
             <div
@@ -322,9 +219,9 @@ const Chat = () => {
                 aria-live="polite"
                 aria-label="Chat messages"
             >
-                {history.map((msg, index) => (
+                {history.map((msg) => (
                     <ChatMessage 
-                        key={msg.id || index} 
+                        key={msg.id} 
                         message={msg} 
                         onRetry={handleRetry}
                     />
@@ -334,10 +231,10 @@ const Chat = () => {
 
             <MessageInput 
                 message={message}
-                setMessage={(value) => dispatch({ type: 'SET_MESSAGE', payload: value })}
-                sendMessage={sendMessage}
+                setMessage={setMessage}
+                sendMessage={handleSendMessage}
                 handleKeyPress={handleKeyPress}
-                loading={loading}
+                loading={isLoading}
                 streaming={streaming}
             />
         </div>

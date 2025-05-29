@@ -9,63 +9,39 @@ import '../styles/markdown.css';
 
 const { Text, Paragraph } = Typography;
 
-function unescapeMarkdown(text) {
-  if (!text) return '';
-  
-  let result = text.replace(/\\n/g, '\n');
-  
-  // Preserve triple backticks for code blocks
-  result = result.replace(/`{3,}([\s\S]*?)`{3,}/g, (match, content) => {
-    return '\n```\n' + content.trim() + '\n```\n';
-  });
-  
-  // IMPORTANT: Make sure we're not modifying inline code backticks
-  // We should NOT replace single backticks at all - comment out any line that does this
-  
-  // Fix other escaped characters
-  result = result
-    .replace(/\\"/g, '"')
-    .replace(/\\'/g, "'")
-    .replace(/\\\\/g, '\\');
-    
-  return result;
-}
 
-function normalizeMarkdown(text) {
+function formatMarkdown(text) {
   if (!text) return '';
+  
   
   let result = text;
   
-  // Fix list items that don't have proper spacing - IMPROVED VERSION
-  // This ensures list numbers stay on the same line as content
+  
   result = result.replace(/(\d+)\.\s*\n+\s*(\S)/g, '$1. $2');
   
-  // Fix code blocks with improper spacing
+  
   result = result.replace(/```(\w*)\s*\n?/g, '```$1\n');
   result = result.replace(/\n?```/g, '\n```');
   
-  // Fix bullet points
+  
   result = result.replace(/•\s*/g, '* ');
   
-  // Ensure paragraphs have proper spacing
-  result = result.replace(/\n{3,}/g, '\n\n');
   
-  // Remove unwanted Unicode characters
-  result = result.replace(/[\u2028\u2029]/g, '\n');
+  result = result.replace(/\n{3,}/g, '\n\n');
   
   return result;
 }
 
 const ChatMessage = ({ message, onRetry }) => {
-  const { role, content, streaming, timestamp, id } = message;
+  const { role, content, streaming, timestamp, references } = message;
   const [copiedCode, setCopiedCode] = useState(null);
   
-  // Custom renderer for code blocks
+  
   const components = {
     code({ node, inline, className, children, ...props }) {
       const codeString = String(children).replace(/\n$/, '');
       
-      // This is critical - handle inline code differently
+      
       if (inline) {
         return (
           <code className={className ? className : "inline-code"} {...props}>
@@ -74,7 +50,7 @@ const ChatMessage = ({ message, onRetry }) => {
         );
       }
       
-      // Only for code blocks (not inline)
+      
       const language = /language-(\w+)/.exec(className || '');
       
       const handleCopy = () => {
@@ -115,11 +91,12 @@ const ChatMessage = ({ message, onRetry }) => {
     }
   };
   
-  // Debugging: Log the original and unescaped content
-  console.log('Original content:', content);
-  console.log('Unescaped content:', unescapeMarkdown(content));
-  console.log('Raw content:', content);
-  console.log('Processed content:', unescapeMarkdown(normalizeMarkdown(content)));
+  
+  const backgroundColor = role === "user" ? "#e6f7ff" : 
+                         role === "system" ? "#fff1f0" : "#f6ffed";
+  
+  const borderColor = role === "user" ? "#91d5ff" : 
+                     role === "system" ? "#ffa39e" : "#b7eb8f";
   
   const handleRetry = () => {
     if (onRetry) {
@@ -127,41 +104,80 @@ const ChatMessage = ({ message, onRetry }) => {
     }
   };
   
+  
+  const displayContent = typeof content === 'object' ? 
+    JSON.stringify(content, null, 2) : content;
+  
+  
+  const renderContent = () => {
+    if (role === "system" && content.startsWith("Error:")) {
+      return (
+        <pre style={{ 
+          whiteSpace: "pre-wrap", 
+          overflow: "auto",
+          maxHeight: "300px",
+          backgroundColor: "#fff1f0",
+          padding: "8px",
+          borderRadius: "4px",
+          fontSize: "0.9em"
+        }}>
+          {content}
+        </pre>
+      );
+    }
+    
+    
+    return (
+      <ReactMarkdown 
+        remarkPlugins={[remarkGfm]} 
+        rehypePlugins={[rehypeHighlight]}
+        className="markdown-content"
+        components={components}
+      >
+        {formatMarkdown(content)}
+      </ReactMarkdown>
+    );
+  };
+  
   return (
     <div style={{ marginBottom: "16px" }}>
       <Card
         size="small"
-        className={role === "user" ? "user-message" : "assistant-message"}
         style={{
-          backgroundColor: role === "user" ? "#e6f7ff" : "#f6ffed",
-          border: `1px solid ${role === "user" ? "#91d5ff" : "#b7eb8f"}`,
+          backgroundColor,
+          border: `1px solid ${borderColor}`,
           boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
         }}
       >
         <div style={{ width: "100%" }}>
           <Text strong>
-            {role === "user" ? "👤 You" : "🤖 Assistant"}
+            {role === "user" ? "👤 You" : role === "system" ? "🚫 System" : "🤖 Assistant"}
             {streaming && " (typing...)"}
           </Text>
           
           {role === "assistant" ? (
             <div className="message-content">
-              <ReactMarkdown 
-                remarkPlugins={[remarkGfm]} 
-                rehypePlugins={[rehypeHighlight]}
-                className="markdown-content"
-                components={components}
-              >
-                {unescapeMarkdown(normalizeMarkdown(content))}
-              </ReactMarkdown>
+              {renderContent()}
               {streaming && (
                 <span className="streaming-cursor">▊</span>
               )}
             </div>
           ) : (
             <Paragraph style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-              {content}
+              {displayContent}
             </Paragraph>
+          )}
+          
+          {/* References section if available */}
+          {references && references.length > 0 && (
+            <div style={{ marginTop: "10px", borderTop: "1px solid #f0f0f0", paddingTop: "10px" }}>
+              <Text strong>References:</Text>
+              <ul style={{ paddingLeft: "20px", margin: "5px 0" }}>
+                {references.map((ref, index) => (
+                  <li key={index}>{ref}</li>
+                ))}
+              </ul>
+            </div>
           )}
           
           <div style={{ 
@@ -174,7 +190,7 @@ const ChatMessage = ({ message, onRetry }) => {
               {new Date(timestamp).toLocaleTimeString()}
             </Text>
             
-            {/* Add retry button for user messages only */}
+            {/* Retry button for user messages only */}
             {role === "user" && (
               <Button 
                 type="text" 
