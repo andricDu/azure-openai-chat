@@ -9,6 +9,7 @@ const Chat = () => {
     const [message, setMessage] = useState("");
     const [history, setHistory] = useState([]);
     const [streaming, setStreaming] = useState(true);
+    const [useEventSource, setUseEventSource] = useState(true);
     const { authenticated } = useContext(AuthContext);
     
     const chatEndRef = useRef(null);
@@ -17,6 +18,7 @@ const Chat = () => {
         clearChatHistory, 
         sendMessage, 
         streamMessage, 
+        streamMessageWithEventSource, 
         isLoading 
     } = useChatApi();
 
@@ -56,7 +58,6 @@ const Chat = () => {
     const handleSendMessage = async () => {
         if (!message.trim()) return;
 
-        
         const userMessage = {
             role: "user",
             content: message,
@@ -65,61 +66,107 @@ const Chat = () => {
         };
         setHistory(prev => [...prev, userMessage]);
         
-        
         const currentMessage = message;
         setMessage("");
 
         if (streaming) {
-            
-            streamMessage(
-                currentMessage,
-                
-                (initialMessage) => {
-                    setHistory(prev => [...prev, initialMessage]);
-                },
-                
-                (msgId, chunk, fullContent) => {
-                    setHistory(prev => 
-                        prev.map(msg => 
-                            msg.id === msgId 
-                                ? { ...msg, content: fullContent } 
-                                : msg
-                        )
-                    );
-                },
-                
-                (msgId, finalContent) => {
-                    setHistory(prev => 
-                        prev.map(msg => 
-                            msg.id === msgId 
-                                ? { ...msg, streaming: false } 
-                                : msg
-                        )
-                    );
-                },
-                
-                (msgId, errorMessage) => {
-                    if (msgId) {
+            // Choose streaming method based on the toggle
+            if (useEventSource) {
+                // Use EventSource streaming
+                streamMessageWithEventSource(
+                    currentMessage,
+                    // On message start
+                    (initialMessage) => {
+                        setHistory(prev => [...prev, initialMessage]);
+                    },
+                    // On content chunk
+                    (msgId, chunk, fullContent) => {
+                        setHistory(prev => 
+                            prev.map(msg => 
+                                msg.id === msgId 
+                                    ? { ...msg, content: fullContent } 
+                                    : msg
+                            )
+                        );
+                    },
+                    // On message complete
+                    (msgId, finalContent) => {
+                        setHistory(prev => 
+                            prev.map(msg => 
+                                msg.id === msgId 
+                                    ? { ...msg, streaming: false } 
+                                    : msg
+                            )
+                        );
+                    },
+                    // On error
+                    (msgId, errorMessage) => {
+                        if (msgId) {
+                            setHistory(prev => prev.filter(msg => msg.id !== msgId));
+                        }
                         
-                        setHistory(prev => prev.filter(msg => msg.id !== msgId));
+                        const errorContent = typeof errorMessage === 'object'
+                            ? JSON.stringify(errorMessage, null, 2)
+                            : String(errorMessage);
+                        
+                        const errorMsg = {
+                            role: "system",
+                            content: `Error: ${errorContent}`,
+                            timestamp: new Date().toISOString(),
+                            id: Date.now()
+                        };
+                        setHistory(prev => [...prev, errorMsg]);
+                    },
+                    // Options
+                    { model: "gpt4o", queryContextLen: 3 }
+                );
+            } else {
+                // Use existing streamMessage function
+                streamMessage(
+                    currentMessage,
+                    (initialMessage) => {
+                        setHistory(prev => [...prev, initialMessage]);
+                    },
+                    (msgId, chunk, fullContent) => {
+                        setHistory(prev => 
+                            prev.map(msg => 
+                                msg.id === msgId 
+                                    ? { ...msg, content: fullContent } 
+                                    : msg
+                            )
+                        );
+                    },
+                    (msgId, finalContent) => {
+                        setHistory(prev => 
+                            prev.map(msg => 
+                                msg.id === msgId 
+                                    ? { ...msg, streaming: false } 
+                                    : msg
+                            )
+                        );
+                    },
+                    (msgId, errorMessage) => {
+                        // Error handling (existing code)
+                        if (msgId) {
+                            setHistory(prev => prev.filter(msg => msg.id !== msgId));
+                        }
+                        
+                        const errorContent = typeof errorMessage === 'object'
+                            ? JSON.stringify(errorMessage, null, 2)
+                            : String(errorMessage);
+                        
+                        const errorMsg = {
+                            role: "system",
+                            content: `Error: ${errorContent}`,
+                            timestamp: new Date().toISOString(),
+                            id: Date.now()
+                        };
+                        setHistory(prev => [...prev, errorMsg]);
                     }
-                    
-                    
-                    const errorContent = typeof errorMessage === 'object'
-                        ? JSON.stringify(errorMessage, null, 2)
-                        : String(errorMessage);
-                    
-                    const errorMsg = {
-                        role: "system",
-                        content: `Error: ${errorContent}`,
-                        timestamp: new Date().toISOString(),
-                        id: Date.now()
-                    };
-                    setHistory(prev => [...prev, errorMsg]);
-                }
-            );
+                );
+            }
         } else {
-            
+            // Non-streaming option (existing code)
             const response = await sendMessage(currentMessage);
             if (response) {
                 setHistory(prev => [...prev, response]);
@@ -136,8 +183,7 @@ const Chat = () => {
 
     const handleRetry = (messageContent) => {
         setMessage(messageContent);
-        
-        
+    
         const userMessage = {
             role: "user",
             content: messageContent,
@@ -148,38 +194,76 @@ const Chat = () => {
         setHistory(prev => [...prev, userMessage]);
         
         if (streaming) {
-            streamMessage(
-                messageContent,
-                (initialMessage) => setHistory(prev => [...prev, initialMessage]),
-                (msgId, chunk, fullContent) => {
-                    setHistory(prev => 
-                        prev.map(msg => 
-                            msg.id === msgId ? { ...msg, content: fullContent } : msg
-                        )
-                    );
-                },
-                (msgId) => {
-                    setHistory(prev => 
-                        prev.map(msg => 
-                            msg.id === msgId ? { ...msg, streaming: false } : msg
-                        )
-                    );
-                },
-                (msgId, errorMessage) => {
-                    if (msgId) {
-                        setHistory(prev => prev.filter(msg => msg.id !== msgId));
+            if (useEventSource) {
+                // Use EventSource streaming
+                streamMessageWithEventSource(
+                    messageContent,
+                    (initialMessage) => setHistory(prev => [...prev, initialMessage]),
+                    (msgId, chunk, fullContent) => {
+                        setHistory(prev => 
+                            prev.map(msg => 
+                                msg.id === msgId ? { ...msg, content: fullContent } : msg
+                            )
+                        );
+                    },
+                    (msgId, finalContent) => {
+                        setHistory(prev => 
+                            prev.map(msg => 
+                                msg.id === msgId ? { ...msg, streaming: false } : msg
+                            )
+                        );
+                    },
+                    (msgId, errorMessage) => {
+                        if (msgId) {
+                            setHistory(prev => prev.filter(msg => msg.id !== msgId));
+                        }
+                        
+                        const errorMsg = {
+                            role: "system",
+                            content: `Error: ${errorMessage}`,
+                            timestamp: new Date().toISOString(),
+                            id: Date.now()
+                        };
+                        setHistory(prev => [...prev, errorMsg]);
+                    },
+                    { model: "gpt4o", queryContextLen: 3 }
+                );
+            } else {
+                // Original streaming method
+                streamMessage(
+                    messageContent,
+                    (initialMessage) => setHistory(prev => [...prev, initialMessage]),
+                    (msgId, chunk, fullContent) => {
+                        setHistory(prev => 
+                            prev.map(msg => 
+                                msg.id === msgId ? { ...msg, content: fullContent } : msg
+                            )
+                        );
+                    },
+                    (msgId, finalContent) => {
+                        setHistory(prev => 
+                            prev.map(msg => 
+                                msg.id === msgId ? { ...msg, streaming: false } : msg
+                            )
+                        );
+                    },
+                    (msgId, errorMessage) => {
+                        if (msgId) {
+                            setHistory(prev => prev.filter(msg => msg.id !== msgId));
+                        }
+                        
+                        const errorMsg = {
+                            role: "system",
+                            content: `Error: ${errorMessage}`,
+                            timestamp: new Date().toISOString(),
+                            id: Date.now()
+                        };
+                        setHistory(prev => [...prev, errorMsg]);
                     }
-                    
-                    const errorMsg = {
-                        role: "system",
-                        content: `Error: ${errorMessage}`,
-                        timestamp: new Date().toISOString(),
-                        id: Date.now()
-                    };
-                    setHistory(prev => [...prev, errorMsg]);
-                }
-            );
+                );
+            }
         } else {
+            // Non-streaming method (existing code)
             sendMessage(messageContent).then(response => {
                 if (response) {
                     setHistory(prev => [...prev, response]);

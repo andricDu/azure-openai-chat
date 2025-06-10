@@ -1,30 +1,34 @@
 import React from "react";
-import { Button, Typography, Space, Card, Switch } from "antd";
-import { ClearOutlined } from "@ant-design/icons";
+import { Button, Typography, Space, Switch } from "antd";
 
-const { Text } = Typography;
-
-const ChatHeader = ({ streaming, setStreaming, clearChat, loading }) => (
-  <Card style={{ marginBottom: "20px" }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
-      <Text strong>AI Chat Assistant</Text>
-      <Space>
-        <Text>Streaming:</Text>
-        <Switch
-          checked={streaming}
-          onChange={setStreaming}
-          disabled={loading}
-        />
-        <Button
-          icon={<ClearOutlined />}
-          onClick={clearChat}
-          disabled={loading}
-        >
-          Clear
-        </Button>
-      </Space>
-    </div>
-  </Card>
+const ChatHeader = ({ streaming, setStreaming, clearChat, loading, useEventSource, setUseEventSource }) => (
+  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+    <Typography.Title level={4}>AI Chat</Typography.Title>
+    <Space>
+      <span>Streaming:</span>
+      <Switch
+        checked={streaming}
+        onChange={setStreaming}
+        disabled={loading}
+      />
+      {streaming && (
+        <>
+          <span>Use EventSource:</span>
+          <Switch
+            checked={useEventSource}
+            onChange={setUseEventSource}
+            disabled={loading}
+          />
+        </>
+      )}
+      <Button
+        onClick={clearChat}
+        disabled={loading}
+      >
+        Clear Chat
+      </Button>
+    </Space>
+  </div>
 );
 
 export default ChatHeader;

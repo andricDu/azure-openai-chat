@@ -312,11 +312,126 @@ export function useChatApi() {
     }
   };
 
+  const streamMessageWithEventSource = async (
+    messageText,
+    onMessageStart,
+    onContentChunk,
+    onMessageComplete,
+    onStreamError,
+    options = { model: "gpt4o", queryContextLen: 3 }
+  ) => {
+    if (!authenticated || !token) {
+      notification.warning({ message: "You must be logged in!" });
+      return false;
+    }
+
+    setIsLoading(true);
+    let eventSource = null;
+    
+    try {
+      document.cookie = `AUTH=${token}; path=/; SameSite=None; Secure`;
+      
+      const params = new URLSearchParams({
+        message: messageText
+      });
+      
+      const url = `${API_BASE_URL}/chat/stream?${params.toString()}`;
+      console.log("Connecting to EventSource:", url);
+    
+      const messageId = Date.now();
+      let streamedContent = "";
+      
+      if (onMessageStart) {
+        onMessageStart({
+          id: messageId,
+          role: "assistant",
+          content: "",
+          timestamp: new Date().toISOString(),
+          streaming: true,
+        });
+      }
+
+      eventSource = new EventSource(url, { withCredentials: true });
+      
+      console.log("EventSource created:", eventSource);
+      eventSource.onmessage = (event) => {
+        try {
+          console.log("EventSource message:", event.data);
+          const data = JSON.parse(event.data);
+          
+          if (data.type === "content" && data.content) {
+            streamedContent += data.content;
+            if (onContentChunk) {
+              onContentChunk(messageId, data.content, streamedContent);
+            }
+          } 
+          else if (data.type === "done") {
+            if (onMessageComplete) {
+              onMessageComplete(messageId, streamedContent);
+            }
+            eventSource.close();
+            setIsLoading(false);
+          } 
+          else if (data.type === "error") {
+            console.log("Error data received:", data);
+            if (onStreamError) {
+              onStreamError(messageId, data.error || "Unknown error");
+            }
+            eventSource.close();
+            setIsLoading(false);
+          }
+        } catch (e) {
+          console.error("Error parsing SSE message:", e, event.data);
+          if (onStreamError) {
+            onStreamError(messageId, `Error parsing response: ${e.message}`);
+          }
+          eventSource.close();
+          setIsLoading(false);
+        }
+      };
+      
+      eventSource.onopen = () => {
+        console.log("EventSource connection opened");
+      };
+      
+      eventSource.onerror = (error) => {
+        console.error("EventSource error:", error);
+        if (onStreamError) {
+          onStreamError(
+            messageId, 
+            "Connection error. The server may be unavailable or you may not have permission."
+          );
+        }
+        eventSource.close();
+        setIsLoading(false);
+      };
+  
+      return () => {
+        if (eventSource) {
+          console.log("Manually closing EventSource connection");
+          eventSource.close();
+          setIsLoading(false);
+        }
+      };
+    } catch (error) {
+      handleError(error, "Failed to initialize stream connection");
+      if (onStreamError) {
+        onStreamError(null, error.message);
+      }
+      if (eventSource) {
+        eventSource.close();
+      }
+      setIsLoading(false);
+      return false;
+    }
+  };
+
   return {
     fetchChatHistory,
     clearChatHistory,
     sendMessage,
     streamMessage,
+    streamMessageWithEventSource, // Add this new function
     isLoading,
     error
   };
